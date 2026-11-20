@@ -631,3 +631,135 @@ document.addEventListener("DOMContentLoaded", () => {
       cameraModal.appendChild(actions);
       document.body.appendChild(cameraModal);
     } catch (err) {
+      console.warn("Không mở được webcam trực tiếp, dùng input chụp ảnh:", err);
+      stopCameraStream();
+      cameraInput.value = "";
+      cameraInput.click();
+    }
+  }
+
+  if (cameraBtn) {
+    cameraBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openLiveCameraModal();
+    });
+  }
+
+  function learnFromUserCorrection(beforeText, afterText) {
+    if (!beforeText || !afterText || beforeText === afterText) return;
+    const beforeTokens = beforeText.trim().split(/\s+/);
+    const afterTokens = afterText.trim().split(/\s+/);
+    if (beforeTokens.length !== afterTokens.length) return;
+
+    let learned = 0;
+    for (let i = 0; i < beforeTokens.length; i++) {
+      const wrongLower = beforeTokens[i]
+        .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
+        .normalize("NFC")
+        .toLowerCase();
+      const rightClean = afterTokens[i]
+        .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
+        .normalize("NFC");
+
+      if (
+        wrongLower.length >= 2 &&
+        rightClean.length >= 2 &&
+        wrongLower !== rightClean.toLowerCase() &&
+        Math.abs(wrongLower.length - rightClean.length) <= 2 &&
+        !/^\d+$/.test(wrongLower)
+      ) {
+        COMMON_OCR_FIXES.set(wrongLower, rightClean);
+        learned++;
+      }
+    }
+    if (learned > 0) saveCommonOcrFixes(COMMON_OCR_FIXES);
+  }
+
+  if (resultText) {
+    resultText.addEventListener("blur", () => {
+      learnFromUserCorrection(lastOcrOutputSnapshot, resultText.value);
+      lastOcrOutputSnapshot = resultText.value;
+    });
+  }
+
+  if (copyBtn && resultText) {
+    copyBtn.addEventListener("click", async () => {
+      learnFromUserCorrection(lastOcrOutputSnapshot, resultText.value);
+      lastOcrOutputSnapshot = resultText.value;
+      try {
+        await navigator.clipboard.writeText(resultText.value);
+        setStatus("Đã sao chép kết quả vào bộ nhớ tạm.");
+      } catch {
+        setStatus(
+          "Không thể tự động sao chép, hãy bôi đen và nhấn Ctrl+C.",
+          true
+        );
+      }
+    });
+  }
+
+  if (downloadBtn && resultText) {
+    downloadBtn.addEventListener("click", () => {
+      learnFromUserCorrection(lastOcrOutputSnapshot, resultText.value);
+      lastOcrOutputSnapshot = resultText.value;
+      const blob = new Blob([resultText.value], {
+        type: "text/plain;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "ket-qua-ocr.txt";
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  }
+
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => {
+      selectedFiles = [];
+      lastOcrOutputSnapshot = "";
+      if (imageInput) imageInput.value = "";
+      if (resultText) resultText.value = "";
+      if (recognizeBtn) recognizeBtn.disabled = true;
+      if (progressWrapper) progressWrapper.classList.add("hidden");
+      if (progressBar) progressBar.style.width = "0%";
+      if (activeCategoryBadge) activeCategoryBadge.classList.add("hidden");
+      setStatus("Đã xóa làm lại.");
+    });
+  }
+
+  if (recognizeBtn) {
+    recognizeBtn.addEventListener("click", async () => {
+      if (!selectedFiles.length) {
+        setStatus("Vui lòng chọn ít nhất 1 ảnh trước.", true);
+        return;
+      }
+
+      if (typeof Tesseract === "undefined" || !Tesseract.createWorker) {
+        setStatus(
+          "Thư viện Tesseract.js chưa tải xong. Hãy kiểm tra kết nối mạng và tải lại trang.",
+          true
+        );
+        return;
+      }
+
+      const customLangInput = document.getElementById("customLangInput");
+      const lang = (customLangInput?.value || "vie").trim() || "vie";
+      const mode = getDocMode();
+
+      let worker = null;
+
+      try {
+        recognizeBtn.disabled = true;
+        if (progressWrapper) progressWrapper.classList.remove("hidden");
+        if (progressBar) progressBar.style.width = "5%";
+        if (progressText) progressText.textContent = "Đang khởi tạo... 5%";
+
+        worker = await Tesseract.createWorker(lang, 1, {
+          logger: (m) => {
+            if (
+              m.status === "recognizing text" &&
+              typeof m.progress === "number"
+            ) {
+              const pct = Math.round(
